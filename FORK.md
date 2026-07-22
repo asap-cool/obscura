@@ -25,9 +25,21 @@ Everything this fork adds on top of `upstream/main`. Two buckets:
 
 | Change | Bucket | Upstream | Files |
 |---|---|---|---|
-| Virtualized scroll geometry: content-sized scroll box + viewport client box so SPA feeds (Google Maps search) paginate to their full result set | **fork-only** | issue [#441](https://github.com/h4ckf0r0day/obscura/issues/441) closed: upstream is doing scroll geometry in the rendering engine instead. PR [#442](https://github.com/h4ckf0r0day/obscura/pull/442) closed. **Carries a known cost**: `scrollHeight` runs `querySelectorAll('*')` on every read, measured at 194–240 ms per 200 reads on a 5,000-node container. Cache it on mutation if sourcing gets slow. | `crates/obscura-js/js/bootstrap.js` |
+| Fire a `scroll` event when `scrollTop` / `scrollLeft` are assigned directly (upstream only fires from `scrollTo`/`scrollBy`), so scroll-driven lazy loaders advance | in-flight | Verified against real Chrome: assigning `scrollTop` fires exactly one `scroll` event there, zero on upstream obscura, one with this patch. PR to open. | `crates/obscura-js/js/bootstrap.js` |
 | GHCR image publish workflow (upstream publishes to Docker Hub with secrets we do not carry) | **fork-only** | n/a | `.github/workflows/docker-ghcr.yml`, `Dockerfile` |
 | This manifest + the sync script | **fork-only** | n/a | `FORK.md`, `scripts/sync-upstream.sh` |
+
+The virtualized **scroll geometry** heuristic (synthetic `scrollHeight` from
+`querySelectorAll('*').length * 40`, viewport-sized `clientHeight` on every
+element, and a `scrollTop` clamped to that box) was dropped rather than carried.
+It made pagination *worse*, and non-deterministically so: the clamp resolves to
+`max(0, descendants * 40 - innerHeight)`, and obscura's stealth layer randomises
+`innerHeight` per session (measured 640 / 640 / 688 / 970 across four runs). So
+whether a feed paginated or froze at its first batch depended on the viewport
+draw — same page, same code, different outcome per run. Measured on a
+progress-gated feed fixture: 20/120 items on an unlucky draw, 120/120 without
+the heuristic. What survives is the scroll-event dispatch above, which is the
+part that was actually load-bearing.
 
 The thread-per-connection V8 isolate confinement and the `--max-connections` /
 glibc-arena caps that used to be carried here landed upstream via

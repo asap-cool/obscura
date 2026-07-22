@@ -2102,41 +2102,25 @@ class Element extends Node {
   // documentElement / body / window expose VIEWPORT geometry, not their own content box.
   // Puppeteer's #clickableBox clips boxes to document.documentElement.clientWidth/Height;
   // returning 100x20 there made every element appear off-screen and broke .click().
-  // With no layout engine, a scroll container needs a viewport-sized client box
-  // and a content-sized scroll box, otherwise scrollTop has no range and the
-  // scroll-driven lazy loaders that PR #431 unblocked still never page in more
-  // rows. Expose the viewport size as the client box for every element (the
-  // click/hit-test path uses getBoundingClientRect, not this) and derive the
-  // scroll box from the subtree size below.
-  get clientWidth() { return globalThis.innerWidth || 1280; }
-  get clientHeight() { return globalThis.innerHeight || 720; }
-  get scrollWidth() { return globalThis.innerWidth || 1280; }
-  get scrollHeight() {
-    if (this._isViewportRoot()) return (globalThis.innerHeight || 720);
-    // Approximate content height from the descendant count so virtualized lists
-    // (which page in more rows as scrollTop nears scrollHeight) can advance past
-    // their first batch. childElementCount is unreliable on these synthetic
-    // subtrees, so count descendants. Leaf elements keep the old 20px height.
-    let n = 0;
-    try { n = this.querySelectorAll('*').length; } catch (e) {}
-    const synthetic = n * 40;
-    return synthetic > 20 ? synthetic : 20;
-  }
+  get clientWidth() { return this._isViewportRoot() ? (globalThis.innerWidth || 1280) : 100; }
+  get clientHeight() { return this._isViewportRoot() ? (globalThis.innerHeight || 720) : 20; }
+  get scrollWidth() { return this._isViewportRoot() ? (globalThis.innerWidth || 1280) : 100; }
+  get scrollHeight() { return this._isViewportRoot() ? (globalThis.innerHeight || 720) : 20; }
   _isViewportRoot() {
     const t = this.tagName;
     return t === 'HTML' || t === 'BODY';
   }
-  // No layout engine, so there is no real overflow to scroll. We track a scroll
-  // offset so scrollTop/scrollLeft round-trip, clamp it to the synthetic scroll
-  // box above (so virtualized lists render the window at the content bottom
-  // instead of overshooting into empty space), and fire a scroll event on direct
-  // assignment -- lazy loaders that set `el.scrollTop = el.scrollHeight` rely on
-  // that event, which the scroll methods below would otherwise be the only source of.
+  // No layout engine, so there is no real overflow to scroll and the offset is
+  // deliberately NOT clamped: without real geometry any synthetic max is a
+  // guess, and a max derived from a stub scroll box pins scrollTop at 0, which
+  // deadlocks scroll-driven lazy loaders (no scroll -> no content -> no scroll).
+  // We track the offset so scrollTop/scrollLeft round-trip, and fire a scroll
+  // event on direct assignment -- lazy loaders that set `el.scrollTop = N` rely
+  // on that event, and scrollTo/scrollBy below would otherwise be its only source.
   get scrollTop() { return this._scrollTop || 0; }
   set scrollTop(v) {
     v = +v;
-    const max = Math.max(0, this.scrollHeight - this.clientHeight);
-    const nv = Number.isFinite(v) && v > 0 ? Math.min(v, max) : 0;
+    const nv = Number.isFinite(v) && v > 0 ? v : 0;
     const changed = nv !== (this._scrollTop || 0);
     this._scrollTop = nv;
     if (changed && !this._scrollSuppress) this._fireScroll();
@@ -2207,9 +2191,9 @@ class Element extends Node {
   set ariaSelected(v) { if (v == null) this.removeAttribute('aria-selected'); else this.setAttribute('aria-selected', String(v)); }
   scrollIntoView() { globalThis.__obscura_click_target = this; }
   // scrollTo/scrollBy/scroll accept either (x, y) or a ScrollToOptions object.
-  // The setters clamp the offset and fire the scroll event; suppress their
-  // per-axis events so the whole operation emits a single scroll event, the way
-  // a real browser coalesces one scroll per movement.
+  // The setters fire a scroll event of their own, so suppress the per-axis ones
+  // here and emit a single event for the whole movement, the way a real browser
+  // coalesces one scroll per scroll operation rather than one per axis.
   scrollTo(x, y) {
     let left, top;
     if (x !== null && typeof x === 'object') { left = x.left; top = x.top; }
